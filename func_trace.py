@@ -33,7 +33,7 @@ class Trace:
     @dataclass
     class FuncContext:
         # id:str
-        show_args:int = 1
+        show_args_cnt:int = 1
         logging_cnt:int=MAX_FUNC_LOGGING
         suppress:Optional[_Suppress] = None
 
@@ -46,7 +46,7 @@ class Trace:
         Trace.rmv_sources(__file__) # remove self.
 
         # common setup: non ROI funcs
-        Trace.set_func_context('<module>', suppress=Trace.Suppress.SelfAndFollowing) # module loading
+        Trace.set_func_context('<module>', suppress=Trace.Suppress.SelfAndFollowing) # suppress module loading
         for fname in ['<listcomp>', '<genexpr>', '<dictcomp>']:
             Trace.set_func_context(fname, suppress=Trace.Suppress.SelfOnly)
 
@@ -78,7 +78,7 @@ class Trace:
             # func only in srcpath.
             id += "@" + os.path.abspath(srcpath)
 
-        Trace._FuncCxt[id] = Trace.FuncContext(show_args=show_args, logging_cnt=logging_cnt, suppress=suppress)
+        Trace._FuncCxt[id] = Trace.FuncContext(show_args_cnt=show_args, logging_cnt=logging_cnt, suppress=suppress)
         print(f'+{id}: {show_args=}, {logging_cnt=}, {suppress=}')
 
     @staticmethod
@@ -277,9 +277,10 @@ class Trace:
             tls.indent += '\t'
             # print('debug: enter', id(frame))
 
-            if fncxt.show_args>0:
-                fncxt.show_args -= 1
+            if fncxt.show_args_cnt>0:
+                fncxt.show_args_cnt -= 1
                 Trace._args(frame)
+
 
         elif event == "return":
 
