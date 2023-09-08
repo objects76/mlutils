@@ -16,7 +16,7 @@ GRAY, RED, GREEN, YELLOW, RESET = '\33[30m', '\33[31m', '\33[32m', '\33[33m', '\
 # GRAY, RED, GREEN, YELLOW, RESET = '', '', '', '', '' # no clr
 
 MAX_FUNC_LOGGING = 20 # 999999
-
+MAX_ARGS_LOGGING = 1
 
 @enum.unique
 class _Suppress(enum.Enum):
@@ -33,7 +33,7 @@ class Trace:
     @dataclass
     class FuncContext:
         # id:str
-        show_args_cnt:int = 1
+        show_args_cnt:int = MAX_ARGS_LOGGING
         logging_cnt:int=MAX_FUNC_LOGGING
         suppress:Optional[_Suppress] = None
 
@@ -47,8 +47,8 @@ class Trace:
 
         # common setup: non ROI funcs
         Trace.set_func_context('<module>', suppress=Trace.Suppress.SelfAndFollowing) # suppress module loading
-        for fname in ['<listcomp>', '<genexpr>', '<dictcomp>']:
-            Trace.set_func_context(fname, suppress=Trace.Suppress.SelfOnly)
+        for fn_name in ['<listcomp>', '<genexpr>', '<dictcomp>']:
+            Trace.set_func_context(fn_name, suppress=Trace.Suppress.SelfOnly)
 
         @dataclass
         class TlsData:
@@ -58,7 +58,7 @@ class Trace:
             indent:str=''
 
         this_thread = threading.current_thread()
-        assert getattr(this_thread, 'tlsdata', None) is None
+        assert getattr(this_thread, 'tlsdata', None) is None, 'call only once per each thread.'
         setattr(this_thread, 'tlsdata', TlsData())
 
         sys.setprofile(Trace._trace)
@@ -68,7 +68,7 @@ class Trace:
 
     @staticmethod
     def set_func_context(func_name:str, srcpath:str=None, *,
-                         show_args:int=1,
+                         show_args_cnt:int=MAX_ARGS_LOGGING,
                          logging_cnt:int=MAX_FUNC_LOGGING,
                          suppress:_Suppress=None):
         assert Path(Trace._workdir).is_dir()
@@ -78,27 +78,31 @@ class Trace:
             # func only in srcpath.
             id += "@" + os.path.abspath(srcpath)
 
-        Trace._FuncCxt[id] = Trace.FuncContext(show_args_cnt=show_args, logging_cnt=logging_cnt, suppress=suppress)
-        print(f'+{id}: {show_args=}, {logging_cnt=}, {suppress=}')
+        Trace._FuncCxt[id] = Trace.FuncContext(show_args_cnt=show_args_cnt, logging_cnt=logging_cnt, suppress=suppress)
+        print(f'+{id}: {show_args_cnt=}, {logging_cnt=}, {suppress=}')
 
     @staticmethod
-    def set_func_context2(funcstr:str, *,
-                          show_args:int=1,
+    def set_func_context_re(fn_src_str:str, *,
+                          show_args_cnt:int=MAX_ARGS_LOGGING,
                           logging_cnt:int=MAX_FUNC_LOGGING,
                           suppress:_Suppress=None):
         '''
-        funcstr: you can removed the line with python comment.
-            # ex) get func_name and srcpath from ' IBasicBlock.forward() models/arcface.py:61, from '
+        fn_src_str: you can removed the line with python comment(#).
+            ex) get func_name and srcpath from ' IBasicBlock.forward() models/arcface.py:61, from '
+                Trace.set_func_context2("""
+                              IBasicBlock.forward() models/arcface.py:61, from
+                              IBasicBlock.__init__() models/arcface.py:42, fr
+                              Masking.get_mask_eyes() utils/masking.py:87, f
+                             # to_np() models/flame.py:26, f                    -> THIS LINE WILL BE IGNORED
+                               to_tensor() models/flame.py:21, fr
+                                { <lambda>() utils/masking.py:75,
+                              """, suppress:_Suppress=Trace.Suppress.SelfAndFollowing)
         '''
-        funcstr = re.sub(r'^\s*#.*$', '', funcstr, flags=re.MULTILINE) # remove comment(#) line
-        matches = re.findall(r'([\w<](?!\(\)).+)\(\)\s+([^:]+):\d+', funcstr)
-        if matches:
-            for match in matches:
-                func_name, srcpath = match
-                func_name = func_name.strip()
-                srcpath = srcpath.strip()
-                Trace.set_func_context(func_name, srcpath,
-                                         show_args=show_args, logging_cnt=logging_cnt, suppress=suppress)
+        funcstr = re.sub(r'^\s*#.*$', '', fn_src_str, flags=re.MULTILINE) # remove comment(#) line
+        matches = re.findall(r'([\w<](?!\(\)).+?)\(\)\s+([^:]+):\d+', funcstr)
+        for func_name, srcpath in matches:
+            Trace.set_func_context(func_name, srcpath,
+                                        show_args_cnt=show_args_cnt, logging_cnt=logging_cnt, suppress=suppress)
 
     _whitelist_files:Set[str] = set()      # Look for these words in the file path.
 
@@ -153,10 +157,15 @@ class Trace:
 
 
     @staticmethod
-    def rmv_sources2(filestrs:str):
-        filestrs = re.sub(r'^\s*#.*$', '', filestrs, flags=re.MULTILINE) # remove comment(#) line
-        py_files = re.findall(r'(\S+\.py)', filestrs)
-        Trace.rmv_sources(py_files)
+    def rmv_sources_re(files_strs:str):
+        '''
+        files_strs: you can removed the line with python comment(#).
+            { Struct.__init__() utils/masking.py:40, from Masking.__init__ (utils/masking.py:57) - MainThread
+            { Masking.__init__() utils/masking.py:52, from BaseModel.__init__ (micalib/base_model.py:43) - MainThread
+        '''
+        files_strs = re.sub(r'^\s*#.*$', '', files_strs, flags=re.MULTILINE) # remove comment(#) line
+        matches = re.findall(r'\(\)\s+((?!\.py).+?\.py):\d+', files_strs)
+        Trace.rmv_sources(matches)
 
     #
     # function arguments
@@ -195,7 +204,7 @@ class Trace:
         if tls.suppress is not None:
             return
 
-        callee_func, callee_file, callee_line = Trace._getfi(frame)
+        callee_func, callee_file, callee_line = Trace._get_frameinfo(frame)
 
         funcxt = Trace._FuncCxt.get(callee_func, None) # without file scope.
         if not funcxt:
@@ -217,7 +226,7 @@ class Trace:
 
 
     @staticmethod
-    def _getfi(frame):
+    def _get_frameinfo(frame:FrameType):
         if frame is None: return ('?', '?', -1)
         src_path = frame.f_code.co_filename
         # src_path = Trace._trim_workingdir(frame.f_code.co_filename)
@@ -235,14 +244,14 @@ class Trace:
 
 
     @staticmethod
-    def _trace(frame, event, arg):
+    def _trace(frame:FrameType, event:str, arg:object):
         if event != "call" and event != 'return': return
 
         # filtering non ROI
         if frame.f_code.co_filename not in Trace._whitelist_files:
             return
 
-        callee_func, callee_file, callee_line = Trace._getfi(frame)
+        callee_func, callee_file, callee_line = Trace._get_frameinfo(frame)
         fnid = f"{callee_func}@{callee_file}"
 
         # if fnid in Trace._blacklist_funcs:
@@ -270,7 +279,7 @@ class Trace:
             if fncxt.logging_cnt < 0:
                 return
 
-            caller_func, caller_file, caller_line = Trace._getfi(frame.f_back)
+            caller_func, caller_file, caller_line = Trace._get_frameinfo(frame.f_back)
             Trace.log(f'{{ {callee_func}() { Trace._trim_workingdir(callee_file)}:{callee_line}, '
                         f'from {caller_func} ({Trace._trim_workingdir(caller_file)}:{caller_line}) - {tls.name}',
                         clr=GREEN)
@@ -302,7 +311,7 @@ class Trace:
                 # print('debug: exit', id(frame))
                 tls.indent = tls.indent[:-1]
                 caller_frame = Trace.get_user_frame(frame.f_back)
-                caller_func, caller_file, caller_line = Trace._getfi(caller_frame)
+                caller_func, caller_file, caller_line = Trace._get_frameinfo(caller_frame)
                 Trace.log(f'}} {callee_func}(), '
                           f'return to {caller_func} ({Trace._trim_workingdir(caller_file)}:{caller_line}) - {tls.name}', clr=GREEN)
 

@@ -57,7 +57,6 @@ def is_sigint():
     return is_sigint.sigstate == 2
 
 
-
 def dmsg(*args, **kwargs):
     caller = inspect.stack()[1][3]
     callerline = getframeinfo(currentframe().f_back.f_back).lineno
